@@ -1,0 +1,36 @@
+{
+  "mcpServers": {
+    "jshook": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@jshookmcp/jshook@latest"
+      ],
+      "env": {}
+    },
+    "js-reverse": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "js-reverse-mcp"
+      ],
+      "env": {}
+    },
+    "idapro": {
+      "type": "stdio",
+      "command": "python",
+      "args": ["-m", "ida_pro_mcp"],
+      "timeout": 1800
+    },
+    "playwright": {
+      "type": "stdio",
+      "command": "npx",
+      "args": [
+        "-y",
+        "@playwright/mcp@latest"
+      ],
+      "env": {}
+    }
+  }
+}

@@ -27,24 +27,7 @@ function Get-ToolPath {
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if (-not $cmd) {
-        $fallbacks = @{
-            'jadx' = @(
-                'C:\Users\25286\Tools\jadx\bin\jadx.bat'
-            )
-            'apktool' = @(
-                'C:\Users\25286\Tools\apktool\apktool.bat'
-            )
-        }
-
-        if ($fallbacks.Contains($Name)) {
-            foreach ($candidate in $fallbacks[$Name]) {
-                if (Test-Path -LiteralPath $candidate) {
-                    return $candidate
-                }
-            }
-        }
-
-        throw "Missing required CLI tool: $Name"
+        throw "Missing required CLI tool: $Name (not found in PATH; install it and add to PATH)"
     }
     return $cmd.Source
 }

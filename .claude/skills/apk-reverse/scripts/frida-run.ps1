@@ -32,27 +32,7 @@ function Get-ToolPath {
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
     if (-not $cmd) {
-        $fallbacks = @{
-            'frida-ls-devices' = @(
-                'C:\Users\25286\AppData\Roaming\Python\Python314\Scripts\frida-ls-devices.exe'
-            )
-            'frida-ps' = @(
-                'C:\Users\25286\AppData\Roaming\Python\Python314\Scripts\frida-ps.exe'
-            )
-            'frida' = @(
-                'C:\Users\25286\AppData\Roaming\Python\Python314\Scripts\frida.exe'
-            )
-        }
-
-        if ($fallbacks.Contains($Name)) {
-            foreach ($candidate in $fallbacks[$Name]) {
-                if (Test-Path -LiteralPath $candidate) {
-                    return $candidate
-                }
-            }
-        }
-
-        throw "Missing required CLI tool: $Name"
+        throw "Missing required CLI tool: $Name (not found in PATH; install frida-tools via pip and add Scripts dir to PATH)"
     }
     return $cmd.Source
 }

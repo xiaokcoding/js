@@ -1,6 +1,6 @@
 ---
 name: mcp-js-reverse-playbook
-description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适用于签名链路定位、页面观察取证、运行时采样、本地补环境复现与证据化输出。优先适配当前环境里的 js-reverse_* 工具。
+description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适用于签名链路定位、页面观察取证、运行时采样、本地补环境复现与证据化输出。优先适配当前环境里的 mcp__js-reverse__* 工具。
 ---
 
 # MCP 前端 JS 逆向作业规范
@@ -19,26 +19,26 @@ description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适
 
 ## 当前环境默认工具映射
 
-本 skill 不假设存在裸工具名，而是默认绑定当前 OpenCode 环境里的 `js-reverse_*` 工具。
+本 skill 不假设存在裸工具名，而是默认绑定当前 Claude Code 环境里的 `mcp__js-reverse__*` 工具（MCP 服务器名 `js-reverse`，工具前缀 `mcp__js-reverse__`）。
 
 常用映射：
 
-- `list_scripts` -> `js-reverse_list_scripts`
-- `get_script_source` -> `js-reverse_get_script_source`
-- `search_in_sources` -> `js-reverse_search_in_sources`
-- `break_on_xhr` -> `js-reverse_break_on_xhr`
-- `evaluate_script` -> `js-reverse_evaluate_script`
-- `get_paused_info` -> `js-reverse_get_paused_info`
-- `set_breakpoint_on_text` -> `js-reverse_set_breakpoint_on_text`
-- `list_network_requests` -> `js-reverse_list_network_requests`
-- `get_request_initiator` -> `js-reverse_get_request_initiator`
-- `get_websocket_messages` -> `js-reverse_get_websocket_messages`
-- `take_screenshot` -> `js-reverse_take_screenshot`
-- `new_page` -> `js-reverse_new_page`
-- `navigate_page` -> `js-reverse_navigate_page`
-- `select_page` -> `js-reverse_select_page`
-- `select_frame` -> `js-reverse_select_frame`
-- `pause/resume` -> `js-reverse_pause_or_resume`
+- `list_scripts` -> `mcp__js-reverse__list_scripts`
+- `get_script_source` -> `mcp__js-reverse__get_script_source`
+- `search_in_sources` -> `mcp__js-reverse__search_in_sources`
+- `break_on_xhr` -> `mcp__js-reverse__break_on_xhr`
+- `evaluate_script` -> `mcp__js-reverse__evaluate_script`
+- `get_paused_info` -> `mcp__js-reverse__get_paused_info`
+- `set_breakpoint_on_text` -> `mcp__js-reverse__set_breakpoint_on_text`
+- `list_network_requests` -> `mcp__js-reverse__list_network_requests`
+- `get_request_initiator` -> `mcp__js-reverse__get_request_initiator`
+- `get_websocket_messages` -> `mcp__js-reverse__get_websocket_messages`
+- `take_screenshot` -> `mcp__js-reverse__take_screenshot`
+- `new_page` -> `mcp__js-reverse__new_page`
+- `navigate_page` -> `mcp__js-reverse__navigate_page`
+- `select_page` -> `mcp__js-reverse__select_page`
+- `select_frame` -> `mcp__js-reverse__select_frame`
+- `pause/resume` -> `mcp__js-reverse__pause_or_resume`
 
 如果未来工具名前缀变化，先更新本节，不要在执行时临时猜测。
 
@@ -60,10 +60,10 @@ description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适
 
 默认动作：
 
-- 用 `js-reverse_new_page` 或 `js-reverse_navigate_page` 打开目标页面
-- 用 `js-reverse_list_network_requests` 找目标请求
-- 用 `js-reverse_get_request_initiator` 回溯调用来源
-- 用 `js-reverse_list_scripts`、`js-reverse_search_in_sources` 缩小脚本范围
+- 用 `mcp__js-reverse__new_page` 或 `mcp__js-reverse__navigate_page` 打开目标页面
+- 用 `mcp__js-reverse__list_network_requests` 找目标请求
+- 用 `mcp__js-reverse__get_request_initiator` 回溯调用来源
+- 用 `mcp__js-reverse__list_scripts`、`mcp__js-reverse__search_in_sources` 缩小脚本范围
 
 必须产出：
 
@@ -78,10 +78,10 @@ description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适
 
 规则：
 
-- 优先 `js-reverse_break_on_xhr`
-- 优先 `js-reverse_evaluate_script` 做轻量运行时观察
-- 命中后先看 `js-reverse_get_paused_info`
-- 必要时再用 `js-reverse_set_breakpoint_on_text`
+- 优先 `mcp__js-reverse__break_on_xhr`
+- 优先 `mcp__js-reverse__evaluate_script` 做轻量运行时观察
+- 命中后先看 `mcp__js-reverse__get_paused_info`
+- 必要时再用 `mcp__js-reverse__set_breakpoint_on_text`
 
 ### 3. Rebuild
 
@@ -117,7 +117,7 @@ description: 在使用 js-reverse-mcp 做前端 JavaScript 逆向时使用，适
 
 - 所有重要步骤都要写入本地 task artifact
 - 如果无法解释为什么调用某个工具，就不要调用
-- 优先使用 `js-reverse_*` 工具直接取证，不要先写脚本重造能力
+- 优先使用 `mcp__js-reverse__*` 工具直接取证，不要先写脚本重造能力
 - 失败时按 `references/fallbacks.md` 回退
 - 输出遵循 `references/output-contract.md`
 

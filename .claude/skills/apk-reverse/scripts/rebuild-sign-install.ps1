@@ -9,7 +9,7 @@ param(
 
     [string]$BaseName,
 
-    [string]$KeystorePath = 'C:\Users\25286\.config\opencode\skills\apk-reverse\debug.keystore',
+    [string]$KeystorePath = (Join-Path $PSScriptRoot 'debug.keystore'),
 
     [string]$KeyAlias = 'androiddebugkey',
 
@@ -36,41 +36,10 @@ function Get-ToolPath {
     param([Parameter(Mandatory = $true)][string]$Name)
 
     $cmd = Get-Command $Name -ErrorAction SilentlyContinue
-    if ($cmd) {
-        return $cmd.Source
+    if (-not $cmd) {
+        throw "Missing required CLI tool: $Name (not found in PATH; install the Android SDK / apktool / JDK and add to PATH)"
     }
-
-    $fallbacks = @{
-        'apktool' = @(
-            'C:\Users\25286\Tools\apktool\apktool.bat'
-        )
-        'zipalign' = @(
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\36.0.0\zipalign.exe',
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\35.0.0\zipalign.exe',
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\34.0.0\zipalign.exe'
-        )
-        'apksigner' = @(
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\36.0.0\apksigner.bat',
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\35.0.0\apksigner.bat',
-            'C:\Users\25286\AppData\Local\Android\Sdk\build-tools\34.0.0\apksigner.bat'
-        )
-        'keytool' = @(
-            'C:\Program Files\Microsoft\jdk-17.0.17.10-hotspot\bin\keytool.exe'
-        )
-        'adb' = @(
-            'C:\Users\25286\AppData\Local\Android\Sdk\platform-tools\adb.exe'
-        )
-    }
-
-    if ($fallbacks.Contains($Name)) {
-        foreach ($candidate in $fallbacks[$Name]) {
-            if (Test-Path -LiteralPath $candidate) {
-                return $candidate
-            }
-        }
-    }
-
-    throw "Missing required CLI tool: $Name"
+    return $cmd.Source
 }
 
 function Ensure-DebugKeystore {
@@ -91,7 +60,7 @@ function Ensure-DebugKeystore {
         New-Item -ItemType Directory -Path $parent -Force | Out-Null
     }
 
-    & $Keytool -genkeypair -v -keystore $Path -storepass $StorePassword -keypass $KeyPassword -alias $Alias -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=OpenCode,C=CN'
+    & $Keytool -genkeypair -v -keystore $Path -storepass $StorePassword -keypass $KeyPassword -alias $Alias -keyalg RSA -keysize 2048 -validity 10000 -dname 'CN=Android Debug,O=ClaudeCode,C=CN'
     if ($LASTEXITCODE -ne 0) {
         throw 'Failed to generate debug keystore.'
     }

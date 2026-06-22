@@ -5,274 +5,268 @@ description: |
 
   Ensure to use this skill when the user wants to analyze any binary file, regardless of whether they explicitly mention "IDA" or "reverse engineering". This includes requests like "看看这个exe", "分析这个dll", "帮我破解", "找一下密码", "这个软件怎么注册", etc.
 
-  Use the bundled scripts (scripts/start.ps1, scripts/open.ps1) for deterministic server management and file opening — do NOT write ad-hoc PowerShell commands for these operations.
+  本技能适配 ida-pro-mcp 1.4.0：MCP 服务器由 IDA GUI 插件托管（编辑 → 插件 → MCP，Ctrl+Alt+M），Claude Code 经项目 `.mcp.json` 的 stdio 桥调用 `idapro_*` 工具。用自带脚本 open.ps1 打开文件、start.ps1 检查连接，不要手写 PowerShell 启动服务器。
 ---
 
-# IDA Pro 逆向分析技能
+# IDA Pro 逆向分析技能（ida-pro-mcp 1.4.0）
 
-## 已知问题与反思（必读）
+## 架构（必读）
 
-### 踩过的坑
+ida-pro-mcp 1.4.0 有三种运行形态：
 
-1. **`idalib_open` 不能通过 OpenCode MCP 直接调用**
-   - OpenCode 的 MCP 客户端对 `idalib_open` 的 output schema 校验有 BUG
-   - 报错：`Structured content does not match the tool's output schema`
-   - **解决办法**：使用 `scripts/open.ps1` 脚本通过 HTTP API 直调，绕过 MCP 校验层
-   - 文件打开后，数据库绑定到共享上下文，其他所有 `idapro_*` 工具可直接使用
+| 形态 | 服务器在哪 | 端口 / 传输 | 适用 |
+|------|-----------|------------|------|
+| **GUI 插件**（主） | IDA GUI 内的 `mcp-plugin.py` | `127.0.0.1:13337` HTTP JSON-RPC | 交互式分析，推荐 |
+| **stdio 桥** | `server.py`（Claude Code 经 `.mcp.json` 调起） | stdio → 转发到 13337 | Claude Code 调用工具的入口 |
+| **headless idalib** | `idalib-mcp <file>` 独立进程 | `127.0.0.1:8745` SSE | 无 GUI 批处理，单文件 |
+
+**数据流（GUI 主工作流）**：
+```
+Claude Code  --stdio-->  server.py  --HTTP JSON-RPC-->  IDA 插件(13337)  --idapro/idalib-->  打开的二进制
+```
+
+`server.py` 启动时解析 `mcp-plugin.py` 的 AST，把 59 个 `@jsonrpc` 函数注册为 MCP 工具，加上 `check_connection` 共 **60 个工具**。工具名**没有 `idapro_` 前缀**，Claude Code 侧按 MCP 服务器名 `idapro` 拼成 `mcp__idapro__<工具名>`（例如 `mcp__idapro__decompile_function`）。
+
+## 已知问题与对策
+
+1. **`idalib.dll` 加载失败 / `Cannot load IDA library`**
+   - 子进程没继承 `IDADIR`。`open.ps1` / `idalib-headless.ps1` 会自动用 `$env:IDADIR`；手动跑 `idalib-mcp` 前先设 `$env:IDADIR = "<你的 IDA 安装目录>"`。
 
 2. **`C:\Windows\System32\` 文件无权限打开**
-   - idalib 无法直接读取 System32 目录下的文件
-   - **解决办法**：`open.ps1` 自动检测并复制到 `Temp\opencode\` 目录后再打开
+   - IDA/idalib 无法直接读 System32。`open.ps1` 自动复制到 `%LOCALAPPDATA%\Temp\ida-mcp\` 再打开；headless 模式请先手动复制。
 
-3. **启动服务器命令阻塞对话**
-   - `idalib-mcp` 启动后会持续输出 INFO 日志到控制台
-   - **解决办法**：使用 `scripts/start.ps1`（`-WindowStyle Hidden` 后台静默启动）
-   - 脚本会等待服务就绪后自动退出，不阻塞对话
+3. **`Failed to connect to IDA Pro!`（check_connection 返回）**
+   - 插件没启动。在 IDA 里按 `Ctrl+Alt+M`（编辑 → 插件 → MCP），看到输出 `[MCP] Server started at http://127.0.0.1:13337` 即就绪。
 
-4. **MCP 服务器名不能用横线**
-   - 之前用 `ida-pro-mcp` 作为服务器名，可能引起工具注册问题
-   - **当前配置**：服务器名 `idapro`，工具前缀 `idapro_*`
+4. **调试器工具（`dbg_*`）不可用**
+   - 这 12 个工具被标记为 unsafe。headless 需 `-Unsafe`；GUI 插件需以 unsafe 模式启动。
 
-5. **Remote HTTP vs Local Stdio**
-   - `type:"local"`（stdio）模式：`idalib_open` 同样有 schema 校验问题
-   - `type:"remote"`（HTTP）模式：可以先用脚本直开文件，再用 MCP 工具
-   - **当前方案**：Remote HTTP 模式
+5. **服务器名不能用横线**
+   - 服务器名固定 `idapro`（无横线），工具前缀 `idapro` 由 Claude Code 侧拼。
 
-6. **PR #389 修复了部分 schema 问题**
-   - 作者 mrexodia 在 issue #388 后通过 PR #389 合并了修复
-   - 修复了 HTTP 模式下的 structuredContent schema，但 OpenCode 侧校验仍有问题
-   - 已安装最新 `main` 分支版本
+6. **headless 模式反编译不可用（本机实测）**
+   - ida-pro-mcp 1.4.0 在 IDA 9.3 + Python 3.13 + idalib headless 下，`decompile_function` / `disassemble_function` / `rename_local_variable` / `set_local_variable_type` 抛 `NotImplementedError: Can't import PySide6. Are you trying to use Qt without GUI?`。设 `QT_QPA_PLATFORM=offscreen` 无效（系统已装 PySide6，但 idalib 内部 Qt 检查仍拒绝）。
+   - 这些工具依赖 Hex-Rays 反编译器，idalib headless 无 GUI 上下文时不可用。
+   - **解法**：用 GUI 插件工作流（`open.ps1` 打开 IDA → `Ctrl+Alt+M` 起插件 → IDA 自带 Qt，反编译可用）。headless 仅用于列举/读取/结构/重命名/patch/进制转换等不依赖反编译器的批量任务。
+   - `get_current_address` / `get_current_function` 在 headless 返回 `0xffffffffffffffff`（无光标），GUI 模式返回真实光标位置。
 
-7. **idalib 超时留下孤儿 worker 进程锁文件**
-   - 第一次 `open.ps1` 超时后，idalib 的 python worker 子进程变成孤儿进程，咬着 `.id0`/`.id1`/`.nam` 不放
-   - 后续任何工具或手动拖入 IDA GUI 都会报"权限不足"
-   - **解决办法**：`start.ps1` 改用 `taskkill /F /T` 杀进程树，不再留孤儿
-   - **兜底**：`open.ps1` 加了自动降级，检测到旧库被锁自动复制到 Temp 并加 GUID 前缀
-
-8. **带自动分析打开看起来像卡死**
-   - `idalib_open(run_auto_analysis=true)` 可能长时间不回包，但后端实际上仍在继续打开和分析
-   - 之前用户侧看到的是“PowerShell 一直无输出”，容易误判成脚本卡死
-   - **当前解决办法**：`open.ps1` 新增 `-TimeoutSeconds`，并改为后台请求 + 前台轮询 + 定时进度输出
-   - 轮询到会话已就绪时会提前返回 `OK:文件名:session_id`，超时则返回 `ERR:open_timeout_xxs`
-
-### 工作流程原则
+## 工作流程
 
 | 步骤 | 做什么 | 用什么 |
 |------|--------|--------|
-| 1 | 确保 HTTP 服务器在运行 | `scripts/start.ps1`（无参数） |
-| 2 | 打开目标二进制文件 | `scripts/open.ps1 -Path "xxx.exe"` |
-| 3 | 使用所有 72 个 MCP 工具 | 直接调用 `idapro_*` 工具 |
-| 4 | 分析完毕 | 工具自动可用 |
+| 1 | 在 IDA 打开目标二进制 | `scripts/open.ps1 -Path "xxx.exe"` |
+| 2 | 等自动分析完成，启动 MCP 插件 | 在 IDA 里 `Ctrl+Alt+M`（编辑 → 插件 → MCP） |
+| 3 | 确认 Claude 能连上 | `scripts/start.ps1`（应输出 `OK:<模块名>`） |
+| 4 | 调用 60 个 MCP 工具分析 | 直接调 `mcp__idapro__<工具名>` |
 
 ## 脚本资源
 
-### start.ps1 — 启动 MCP HTTP 服务器
+### `scripts/open.ps1` — 用 IDA GUI 打开文件
 
-路径：`scripts/start.ps1`
+- 用 `$env:IDADIR\ida.exe` 定位 IDA（IDA 不走 PATH，必须设 `IDADIR`）
+- System32 文件自动复制到 `%LOCALAPPDATA%\Temp\ida-mcp\` 后打开
+- 成功输出 `OK:opened`（含 `(temp copy)` 标记表示用了临时副本）
 
-- 用 `taskkill /F /T` 杀旧进程树（连 worker 子进程一起清理）→ 后台启动 `idalib-mcp` → 等待就绪（最多 15 秒）
-- 成功输出 `OK:72`，失败输出 `ERR:timeout`
-- 服务器在后台运行，不阻塞对话
-
-**调用方式**：
 ```
-powershell -File "C:\Users\25286\.config\opencode\skills\ida-reverse\scripts\start.ps1"
+powershell -File "scripts\open.ps1" -Path "C:\path\to\file.exe"
 ```
 
-### open.ps1 — 打开二进制文件
+打开后**还需在 IDA 里按 `Ctrl+Alt+M` 启动插件**，脚本会提示。
 
-路径：`scripts/open.ps1`
+### `scripts/start.ps1` — 检查 MCP 插件是否在线
 
-- 通过 HTTP API 直调 `idalib_open`，绕过 MCP schema 校验
-- 自动检测 System32 路径并复制到临时目录
-- 自动清理同名旧数据库文件（`.id0`/`.id1`/`.nam`/`.til`/`.i64`）
-- 旧库被锁时自动降级：复制到 Temp 加 GUID 前缀后打开，不报错
-- 将打开请求放到后台执行，避免长时间同步等待导致脚本无响应
-- 支持 `-TimeoutSeconds`，超时后返回 `ERR:open_timeout_xxs`，不会无限卡住
-- 每隔 10 秒输出一次 `INFO:opening:已用时/超时秒数`，便于判断仍在分析中
-- 成功输出 `OK:文件名:session_id`，降级时加 `(temp copy)` 标记
-- 失败时自动重试走 Temp 副本
+- 探测 `127.0.0.1:13337/mcp` 的 `get_metadata`
+- 在线输出 `OK:<当前打开的模块名>`，离线输出 `ERR:not_running` + 提示按 `Ctrl+Alt+M`
+- **不启动任何进程**
 
-**调用方式**：
 ```
-powershell -File "C:\Users\25286\.config\opencode\skills\ida-reverse\scripts\open.ps1" -Path "C:\path\to\file.exe"
+powershell -File "scripts\start.ps1"
 ```
 
-**可选参数**：
+### `scripts/idalib-headless.ps1` — 无 GUI 批处理（可选）
+
+- 后台跑 `idalib-mcp <file>`，SSE 端口默认 8745
+- 自动设 `IDADIR`，用 PATH 上的 `idalib-mcp` 或 pip 脚本回退路径
+- 前台常驻，单独终端跑；`-Unsafe` 启用调试器工具
+
 ```
-# 指定 SessionId
-powershell -File "scripts\open.ps1" -Path "file.exe" -SessionId "my_session"
-
-# 跳过自动分析（大文件推荐）
-powershell -File "scripts\open.ps1" -Path "large.exe" -NoAutoAnalysis
-
-# 设置超时，避免带自动分析时长时间无返回
-powershell -File "scripts\open.ps1" -Path "file.exe" -TimeoutSeconds 600
-```
-
-**输出约定**：
-```
-# 分析进行中（每 10 秒输出一次）
-INFO:opening:11/600s
-
-# 成功打开
-OK:sample.exe:abcd1234
-
-# 成功打开，但因锁文件降级到 Temp 副本
-OK:1234abcd-sample.exe:abcd1234 (temp copy)
-
-# 达到超时上限
-ERR:open_timeout_600s
+pwsh -File "scripts\idalib-headless.ps1" -Path "sample.exe"
+pwsh -File "scripts\idalib-headless.ps1" -Path "sample.exe" -Port 8745 -Unsafe
 ```
 
-**实测说明**：
-- `Snipaste.exe` 带自动分析实测约 `324s` 才返回成功，属于“分析很久”而不是“脚本死锁”
-- 因此遇到 GUI 程序或较复杂样本时，建议优先显式设置 `-TimeoutSeconds 600`
+连接方式：在 `.mcp.json` 加一个 SSE 服务器
+```json
+"idapro-headless": { "type": "sse", "url": "http://127.0.0.1:8745/sse" }
+```
 
-## 核心工具列表
+## 核心工具列表（共 60）
 
-### 概况分析（第一步）
-- `idapro_survey_binary(detail_level="minimal")` — 快速概况：函数数、字符串、段、入口点、导入分类（加密/网络/文件IO）
-- `idapro_list_funcs(queries)` — 列出函数（分页、按名称过滤）
-- `idapro_list_globals(queries)` — 列出全局变量
-- `idapro_entity_query(kind, filter)` — 统一查询：functions/globals/imports/strings/names
+工具名调用时前缀 `mcp__idapro__`。`dbg_*` 为 unsafe，需开启 unsafe 模式。
 
-### 反编译与反汇编
-- `idapro_decompile(addr)` — 反编译为伪代码
-- `idapro_disasm(addr, max_instructions=N)` — 反汇编
-- `idapro_analyze_function(addr, include_asm=false)` — 综合分析（伪代码+字符串+常量+调用者+被调用者+块）
-- `idapro_func_profile(queries)` — 函数概要指标
+### 连接
+- `check_connection()` — 验证 IDA 插件是否在跑，返回当前打开的文件
 
-### 交叉引用与数据流
-- `idapro_xrefs_to(addrs)` — 查谁引用目标地址
-- `idapro_xref_query(addr, direction)` — 高级 xref 查询（方向/类型过滤）
-- `idapro_callees(addrs)` — 子函数列表
-- `idapro_callgraph(roots, max_depth)` — 调用图
-- `idapro_trace_data_flow(addr, direction, max_depth)` — 数据流追踪（forward/backward）
+### 元数据与导航
+- `get_metadata()` — 路径/模块名/基址/大小/md5/sha256
+- `get_function_by_name(name)` — 按函数名定位，返回地址/大小
+- `get_function_by_address(addr)` — 按地址定位所在函数
+- `get_current_address()` — IDA 当前光标地址（headless 返回 0xffffffffffffffff）
+- `get_current_function()` — IDA 当前光标所在函数
+- `get_entry_points()` — 列出入口点
 
-### 搜索
-- `idapro_find_regex(pattern, limit)` — 正则搜字符串
-- `idapro_search_text(pattern)` — 在反汇编列表中搜文本
-- `idapro_find_bytes(patterns, limit)` — 字节模式搜索（支持 ?? 通配符）
-- `idapro_find(type, targets)` — 高级搜索（立即数/字符串/引用）
+### 列举（均分页：offset 起始、count 数量，0 表示剩余全部）
+- `list_functions(offset, count)` — 函数列表
+- `list_imports(offset, count)` — 导入表
+- `list_strings(offset, count)` — 字符串列表
+- `list_strings_filter(offset, count, filter)` — 按过滤词匹配字符串（支持 /regex/）
+- `list_globals(offset, count)` — 全局变量列表
+- `list_globals_filter(offset, count, filter)` — 按过滤词匹配全局
+- `list_local_types()` — 列出本地类型
 
-### 内存与数据
-- `idapro_get_bytes(addrs)` — 读原始字节
-- `idapro_get_string(addrs)` — 读字符串
-- `idapro_get_int(queries)` — 读整数值
-- `idapro_get_global_value(queries)` — 读全局变量值
-- `idapro_read_struct(queries)` — 读结构体字段值
-- `idapro_search_structs(filter)` — 搜索结构体
+### 反编译与反汇编（headless 不可用，见已知问题 6）
+- `decompile_function(addr)` — Hex-Rays 伪代码
+- `disassemble_function(start_address)` — 反汇编指定函数
 
-### 修改操作
-- `idapro_set_comments(items)` — 添加注释（反汇编+反编译双向同步）
-- `idapro_append_comments(items)` — 追加注释
-- `idapro_rename(batch)` — 批量重命名（函数/全局/局部/栈变量）
-- `idapro_patch_asm(items)` — Patch 汇编指令
-- `idapro_patch(patches)` — Patch 字节
-- `idapro_define_func(items)` — 定义函数
-- `idapro_undefine(items)` — 取消定义
-- `idapro_define_code(items)` — 将字节转为代码
+### 交叉引用与调用图
+- `get_xrefs_to(addr)` — 谁引用了该地址（数据/代码）
+- `get_xrefs_to_field(struct_name, field_name)` — 谁引用了某结构体字段
+- `get_callers(function_address)` — 谁调用了该函数
+- `get_callees(function_address)` — 该函数调用了谁
 
-### 类型系统
-- `idapro_declare_type(decls)` — 声明 C 结构体/枚举/联合体
-- `idapro_set_type(edits)` — 应用类型到函数/全局/局部
-- `idapro_infer_types(addrs)` — 推断类型
-- `idapro_type_query(queries)` — 查询已声明类型
-- `idapro_type_inspect(queries)` — 查看类型详情
+### 内存读取
+- `read_memory_bytes(memory_address, size)` — 读原始字节
+- `data_read_byte(addr)` — 读 1 字节整数
+- `data_read_word(addr)` — 读 2 字节整数
+- `data_read_dword(addr)` — 读 4 字节整数
+- `data_read_qword(addr)` — 读 8 字节整数
+- `data_read_string(addr)` — 读字符串
+
+### 全局变量
+- `get_global_variable_value_at_address(addr)` — 按地址读全局变量值（优先于 data_read_*）
+- `get_global_variable_value_by_name(name)` — 按名读全局变量值
+
+### 结构体
+- `get_defined_structures()` — 列出所有已定义结构体
+- `search_structures(filter)` — 按名搜索结构体
+- `get_struct_info_simple(name)` — 结构体基本信息（大小/成员）
+- `get_struct_at_address(addr, struct_name)` — 按地址解析某结构体实例的各字段值
+- `analyze_struct_detailed(name)` — 结构体详细分析（全部字段+偏移+类型）
+- `declare_c_type(c_declaration)` — 声明 C 结构体/枚举（如 `struct foo { int a; };`）
 
 ### 栈帧
-- `idapro_stack_frame(addrs)` — 查看栈帧变量
-- `idapro_declare_stack(items)` — 声明栈变量
-- `idapro_delete_stack(items)` — 删除栈变量
+- `get_stack_frame_variables(function_address)` — 查看函数栈帧变量（名称/偏移/大小/类型）
+- `create_stack_frame_variable(function_address, offset, variable_name, type_name)` — 在指定偏移声明一个栈变量
+- `delete_stack_frame_variable(function_address, variable_name)` — 删除栈变量
 
-### 签名
-- `idapro_make_signature(addrs)` — 为地址生成唯一字节签名
-- `idapro_make_signature_for_function(addrs)` — 为函数生成签名
-- `idapro_find_xref_signatures(addrs)` — 为引用地址的代码生成签名
+### 重命名
+- `rename_function(function_address, new_name)` — 重命名函数
+- `rename_global_variable(old_name, new_name)` — 重命名全局变量
+- `rename_local_variable(function_address, old_name, new_name)` — 重命名局部变量（headless 不可用）
+- `rename_stack_frame_variable(function_address, old_name, new_name)` — 重命名栈变量
 
-### 调试器（需要 ?ext=dbg）
-- `idapro_open_file(file_path)` — 在 GUI IDA 实例中打开文件
-- 调试器工具默认隐藏，可通过 URL 参数 `?ext=dbg` 启用
+### 注释
+- `set_comment(address, comment)` — 加注释（反汇编+反编译双向同步）
 
-### 会话管理
-- `idapro_idalib_open(input_path)` — ⚠️ 有 schema 校验 BUG，改用 `open.ps1` 脚本
-- `idapro_idalib_list()` — 列出所有 session
-- `idapro_idalib_current()` — 当前上下文绑定的 session
-- `idapro_idalib_switch(session_id)` — 切换到其他 session
-- `idapro_idalib_close(session_id)` — 关闭 session
-- `idapro_idalib_save(path)` — 保存数据库
-- `idapro_idalib_health(session_id)` — 检查 worker 健康状态
+### 类型
+- `set_function_prototype(function_address, prototype)` — 设置函数原型
+- `set_global_variable_type(variable_name, new_type)` — 设置全局变量类型
+- `set_local_variable_type(function_address, variable_name, new_type)` — 设置局部变量类型（headless 不可用）
+- `set_stack_frame_variable_type(function_address, variable_name, type_name)` — 设置栈变量类型
 
-### 其他
-- `idapro_int_convert(inputs)` — 进制转换（**必须用这个，不要自己算进制！**）
-- `idapro_export_funcs(addrs, format)` — 导出函数（json/c_header/prototypes）
-- `idapro_py_eval(code)` — 在 IDA 上下文执行 Python
-- `idapro_server_health()` — 服务器健康检查
-- `idapro_server_warmup()` — 预热子系统（字符串缓存、Hex-Rays 等）
+### Patch
+- `patch_address_assembles(address, instructions)` — Patch 汇编指令，多条用 `;` 分隔（默认可用，非 unsafe）
 
-## 逆向分析完整工作流
+### 进制转换
+- `convert_number(text, size?)` — **进制转换必须用这个，不要自己算**（text 如 `0x401000`，size 可选）
 
-### Step 1: 启动服务器
-确保 HTTP 服务在后台运行。
-```
-powershell -File "scripts/start.ps1"
-```
-输出 `OK:72` 表示就绪。
+### 调试器（unsafe，需 `--unsafe` 或 unsafe 插件模式）
+- `dbg_start_process()` — 启动调试器，返回当前指令指针
+- `dbg_exit_process()` — 退出被调试进程
+- `dbg_continue_process()` — 继续运行
+- `dbg_step_into()` — 单步进入
+- `dbg_step_over()` — 单步跨过
+- `dbg_run_to(addr)` — 运行到地址
+- `dbg_set_breakpoint(addr)` — 设置断点
+- `dbg_delete_breakpoint(addr)` — 删除断点
+- `dbg_enable_breakpoint(addr, enable)` — 启用/禁用断点
+- `dbg_list_breakpoints()` — 列出断点
+- `dbg_get_registers()` — 读全部寄存器
+- `dbg_get_call_stack()` — 读调用栈
 
-### Step 2: 打开文件
-```
-powershell -File "scripts/open.ps1" -Path "C:\目标.exe" -TimeoutSeconds 600
-```
-输出 `OK:文件名:session_id` 表示成功（后带 `(temp copy)` 表示自动降级到临时副本）。
-若分析时间较长，会周期性输出 `INFO:opening:...`；若达到超时则输出 `ERR:open_timeout_xxs`。
+## 完整工作流
 
-### Step 3: 全局概览
+### Step 1: 打开文件
 ```
-idapro_survey_binary(detail_level="minimal")
+powershell -File "scripts\open.ps1" -Path "C:\目标.exe"
 ```
-关注：
-- 架构（x86/x64/ARM）
-- 入口点（main/WinMain/DllMain）
-- 有趣的字符串（URL、路径、错误消息）
-- 导入分类（加密函数？网络 API？文件操作？）
-- 热门函数（高 xref 计数的函数通常是关键逻辑）
+输出 `OK:opened`。System32 文件会输出 `OK:opened (temp copy)`。
 
-### Step 4: 深入关键函数
-```
-idapro_analyze_function(addr="关键函数名")
-```
-或：
-```
-idapro_decompile(addr="函数名")
-idapro_disasm(addr="函数名", max_instructions=50)
-```
+### Step 2: 在 IDA 里启动插件
+等自动分析跑完，按 `Ctrl+Alt+M`（编辑 → 插件 → MCP），IDA 控制台出现 `[MCP] Server started at http://127.0.0.1:13337`。
 
-### Step 5: 数据流和交叉引用
+### Step 3: 确认连接
 ```
-idapro_xrefs_to(addrs="关键地址/字符串")
-idapro_callgraph(roots=["关键函数"], max_depth=3)
-idapro_trace_data_flow(addr="关键地址", direction="backward", max_depth=5)
+powershell -File "scripts\start.ps1"
+```
+输出 `OK:目标.exe` 表示 Claude 可调用工具。
+
+### Step 4: 全局概览
+```
+mcp__idapro__get_metadata()
+mcp__idapro__list_functions()       # 分页/过滤
+mcp__idapro__list_imports()
+mcp__idapro__list_strings_filter(filter="http|error|key")
+```
+关注：架构、入口点、可疑字符串（URL/路径/报错）、导入分类（加密/网络/文件IO）。
+
+### Step 5: 深入关键函数
+```
+mcp__idapro__decompile_function(addr="main")
+mcp__idapro__disassemble_function(addr="0x140001000")
 ```
 
-### Step 6: 记录和优化
+### Step 6: 数据流与交叉引用
 ```
-idapro_set_comments(items=[{"addr": "0x140001000", "comment": "你的理解"}])
-idapro_rename(batch={"func": [{"addr": "函数地址", "name": "有意义的名字"}]})
+mcp__idapro__get_xrefs_to(addr="关键字符串地址")
+mcp__idapro__get_callers(addr="关键函数")
+mcp__idapro__get_callees(addr="关键函数")
 ```
 
-### Step 7: 输出报告
-分析完成后，生成 `report.md` 记录发现和步骤。
+### Step 7: 记录与优化
+```
+mcp__idapro__set_comment(addr="0x140001000", comment="你的理解")
+mcp__idapro__rename_function(addr="sub_140001000", name="check_license")
+```
+
+### Step 8: 输出报告
+生成 `report.md` 记录发现与步骤。
 
 ## Prompt 工程准则
 
-1. **不要手动算进制** — 任何时候需要转换数字，用 `idapro_int_convert`
-2. **先 survey 后深入** — 先看概况再针对性分析
-3. **持续加注释和重命名** — 分析过程中不断更新函数名和变量名，提升后续分析的准确性
-4. **跟踪交叉引用** — 发现有趣的数据/字符串，用 `xrefs_to` 看谁引用了它
-5. **遇到混淆代码** — 先做字符串解密、导入哈希去除、控制流平坦化去除等预处理
-6. **C++ STL 代码** — 用 FLIRT/Lumina 识别库函数后，再分析业务逻辑
-7. **不要暴力破解** — 分析应从反汇编中推导解决方案，用简单 Python 辅助计算
-8. **遇到 "No database bound"** — 还没有打开任何二进制文件，先执行 `open.ps1`
-9. **遇到 "Failed to open database"** — 可能是旧数据库文件被锁，`open.ps1` 会自动降级到 Temp 副本（输出含 `(temp copy)` 标记）
-10. **带自动分析打开 GUI/复杂样本时** — 默认加 `-TimeoutSeconds 600`，不要把长时间 `INFO:opening:...` 误判成脚本卡死
+1. **不要手动算进制** — 用 `convert_number`
+2. **先 metadata/list 后深入** — 先概况再针对性分析
+3. **持续加注释和重命名** — 提升后续分析准确性
+4. **跟踪交叉引用** — 有趣的字符串/数据用 `get_xrefs_to` 看谁引用
+5. **遇到混淆** — 先做字符串解密、导入哈希去除、控制流平坦化去除等预处理
+6. **C++ STL** — 用 FLIRT/Lumina 识别库函数后再分析业务逻辑
+7. **遇到 "Failed to connect"** — 插件没起，回 IDA 按 `Ctrl+Alt+M`（编辑 → 插件 → MCP）
+8. **遇到 "Cannot load IDA library"** — `IDADIR` 没设或路径不对，把它设成你的 IDA 安装目录（如 `C:\Program Files\IDA Professional 9.3`）
+9. **headless 卡住** — `idalib-mcp` 是前台常驻进程，分析大文件会先静默分析再开 SSE，看终端日志判断进度
+
+## MCP 配置（项目 `.mcp.json`，已配好，可移植）
+
+```json
+"idapro": {
+  "type": "stdio",
+  "command": "python",
+  "args": ["-m", "ida_pro_mcp"],
+  "timeout": 1800
+}
+```
+
+`python` 从 PATH 解析，`-m ida_pro_mcp` 跑包内 server（默认 stdio transport）。换机器无需改此配置，只要 `python` 在 PATH 且 `pip install ida-pro-mcp`。
+
+headless 可选追加（需先跑 `scripts/idalib-headless.ps1` 起 SSE 服务器）：
+```json
+"idapro-headless": { "type": "sse", "url": "http://127.0.0.1:8745/sse" }
+```
